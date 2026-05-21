@@ -66,7 +66,8 @@ public abstract class ReplicationAPIBase extends JerseyResource {
   public static final String TLOG_FILE = "tlogFile";
   public static final String FILE_STREAM = "filestream";
   public static final String STATUS = "status";
-  public static final int PACKET_SZ = 1024 * 1024; // 1MB
+  public static final int PACKET_SZ =
+      Integer.getInteger("solr.replication.packetSize", 1024 * 1024); // default 1MB
   public static final String GENERATION = "generation";
   public static final String OFFSET = "offset";
   public static final String LEN = "len";

@@ -16,10 +16,13 @@
  */
 package org.apache.solr.handler.component;
 
+import static org.apache.solr.metrics.SolrMetricProducer.STATE_KEY_ATTR;
 import static org.apache.solr.util.stats.InstrumentedHttpListenerFactory.KNOWN_METRIC_NAME_STRATEGIES;
 
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.ObservableLongGauge;
+import io.opentelemetry.api.metrics.ObservableLongMeasurement;
 import java.lang.invoke.MethodHandles;
 import java.util.Iterator;
 import java.util.List;
@@ -65,6 +68,10 @@ import org.apache.solr.security.HttpClientBuilderPlugin;
 import org.apache.solr.update.UpdateShardHandlerConfig;
 import org.apache.solr.util.plugin.PluginInfoInitialized;
 import org.apache.solr.util.stats.InstrumentedHttpListenerFactory;
+import org.eclipse.jetty.client.AbstractConnectionPool;
+import org.eclipse.jetty.client.ConnectionPool;
+import org.eclipse.jetty.client.Destination;
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -473,6 +480,46 @@ public class HttpShardHandlerFactory extends ShardHandlerFactory
                     Attributes.of(STATE_KEY_ATTR, "available"));
               },
               null);
+
+      solrMetricsContext.observableLongGauge(
+          "solr.query.client.connections",
+          "Jetty HTTP connection pool counters for the distributed query (shard handler) client. "
+              + "state=active: connections processing a request; "
+              + "state=idle: open connections awaiting a request; "
+              + "state=pending: TCP handshakes in progress; "
+              + "state=queued: requests waiting because all connections are busy.",
+          measurement ->
+              recordConnPoolStats(
+                  measurement,
+                  defaultClient.getHttpClient(),
+                  Attributes.empty()));
     }
+  }
+
+  private static void recordConnPoolStats(
+      ObservableLongMeasurement measurement,
+      org.eclipse.jetty.client.HttpClient httpClient,
+      Attributes baseAttrs) {
+    long active = 0, idle = 0, pending = 0, queued = 0;
+    for (Destination dest : httpClient.getDestinations()) {
+      if (dest instanceof HttpDestination httpDest) {
+        ConnectionPool pool = httpDest.getConnectionPool();
+        if (pool instanceof AbstractConnectionPool acp) {
+          active += acp.getActiveConnectionCount();
+          idle += acp.getIdleConnectionCount();
+          pending += acp.getPendingConnectionCount();
+        }
+        queued += httpDest.getQueuedRequestCount();
+      }
+    }
+    final AttributeKey<String> clientKey = AttributeKey.stringKey("client");
+    measurement.record(
+        active, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "active").build());
+    measurement.record(
+        idle, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "idle").build());
+    measurement.record(
+        pending, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "pending").build());
+    measurement.record(
+        queued, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "queued").build());
   }
 }

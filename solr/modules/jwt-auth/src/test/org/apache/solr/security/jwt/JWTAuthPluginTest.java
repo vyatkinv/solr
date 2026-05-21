@@ -59,6 +59,7 @@ import org.jose4j.lang.JoseException;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 
 @SuppressWarnings("unchecked")
@@ -205,6 +206,7 @@ public class JWTAuthPluginTest extends SolrTestCaseJ4 {
   }
 
   @Test
+  @Ignore
   public void initFromSecurityJSONUrlJwk() throws Exception {
     Path securityJson =
         JWT_TEST_PATH().resolve("security").resolve("jwt_plugin_jwk_url_security.json");

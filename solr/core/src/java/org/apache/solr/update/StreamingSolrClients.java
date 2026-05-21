@@ -44,6 +44,7 @@ public class StreamingSolrClients {
   // should be less than solr.jetty.http.idleTimeout
   private final int pollQueueTimeMillis =
       Integer.getInteger("solr.cloud.client.pollQueueTime", 10000);
+  private final int updateQueueSize = Integer.getInteger("solr.cloud.client.updateQueueSize", 100);
 
   private HttpJettySolrClient httpClient;
 
@@ -78,7 +79,7 @@ public class StreamingSolrClients {
           new ErrorReportingConcurrentUpdateSolrClient.Builder(
                   req.node.getBaseUrl(), httpClient, req, errors)
               .withDefaultCollection(defaultCore)
-              .withQueueSize(100)
+              .withQueueSize(updateQueueSize)
               .withThreadCount(runnerCount)
               .withExecutorService(updateExecutor)
               .alwaysStreamDeletes()

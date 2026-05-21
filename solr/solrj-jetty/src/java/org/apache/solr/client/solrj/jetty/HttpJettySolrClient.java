@@ -115,6 +115,17 @@ public class HttpJettySolrClient extends HttpSolrClientBase {
   public static final String ASYNC_REQUESTS_MAX_SYSPROP =
       "solr.solrj.http.jetty.async_requests.max";
 
+  /** System property to configure the number of NIO selector threads for the Jetty HTTP client. Default 2. */
+  public static final String HTTP_CLIENT_SELECTORS_SYSPROP = "solr.http.client.selectors";
+
+  /**
+   * System property to configure the maximum number of HTTP/2 connections per destination.
+   * Default 4. HTTP/2 multiplexes many requests over each connection, so a small value is
+   * sufficient in most cases; increase when concurrent recovery streams saturate the limit.
+   */
+  public static final String HTTP2_MAX_CONNECTIONS_PER_DEST_SYSPROP =
+      "solr.http2.maxConnectionsPerDestination";
+
   public static final String REQ_PRINCIPAL_KEY = "solr-req-principal";
   private static final String USER_AGENT =
       "Solr[" + MethodHandles.lookup().lookupClass().getName() + "] " + SolrVersion.LATEST_STRING;
@@ -275,7 +286,7 @@ public class HttpJettySolrClient extends HttpSolrClientBase {
     ClientConnector clientConnector = new ClientConnector();
     clientConnector.setReuseAddress(true);
     clientConnector.setSslContextFactory(sslContextFactory);
-    clientConnector.setSelectors(2);
+    clientConnector.setSelectors(EnvUtils.getPropertyAsInteger(HTTP_CLIENT_SELECTORS_SYSPROP, 2));
 
     HttpClient httpClient;
     HttpClientTransport transport;
@@ -297,7 +308,8 @@ public class HttpJettySolrClient extends HttpSolrClientBase {
       HTTP2Client http2client = new HTTP2Client(clientConnector);
       transport = new HttpClientTransportOverHTTP2(http2client);
       httpClient = new HttpClient(transport);
-      httpClient.setMaxConnectionsPerDestination(4);
+      httpClient.setMaxConnectionsPerDestination(
+          EnvUtils.getPropertyAsInteger(HTTP2_MAX_CONNECTIONS_PER_DEST_SYSPROP, 4));
     }
 
     httpClient.setExecutor(this.executor);

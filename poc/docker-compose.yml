@@ -1,0 +1,77 @@
+services:
+
+  zookeeper:
+    image: zookeeper:3.9
+    hostname: zookeeper
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_SERVERS: server.1=zookeeper:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: "mntr,conf,ruok"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  solr1:
+    build: .
+    hostname: solr1
+    ports:
+      - "8981:8983"
+    environment:
+      ZK_HOST: zookeeper:2181
+    command: >
+      start -f -c
+      -Dsolr.jetty.http.acceptQueueSize=1000
+      -Dhost=solr1
+      ${SOLR_EXTRA_OPTS:-}
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8983/solr/admin/info/system"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  solr2:
+    build: .
+    hostname: solr2
+    ports:
+      - "8982:8983"
+    environment:
+      ZK_HOST: zookeeper:2181
+    command: >
+      start -f -c
+      -Dsolr.jetty.http.acceptQueueSize=1000
+      -Dhost=solr2
+      ${SOLR_EXTRA_OPTS:-}
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8983/solr/admin/info/system"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  solr3:
+    build: .
+    hostname: solr3
+    ports:
+      - "8983:8983"
+    environment:
+      ZK_HOST: zookeeper:2181
+    command: >
+      start -f -c
+      -Dsolr.jetty.http.acceptQueueSize=1000
+      -Dhost=solr3
+      ${SOLR_EXTRA_OPTS:-}
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8983/solr/admin/info/system"]
+      interval: 10s
+      timeout: 5s
+      retries: 12

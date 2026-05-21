@@ -16,9 +16,13 @@
  */
 package org.apache.solr.update;
 
+import static org.apache.solr.metrics.SolrMetricProducer.STATE_KEY_ATTR;
 import com.google.common.annotations.VisibleForTesting;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.ObservableLongMeasurement;
 import java.lang.invoke.MethodHandles;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.SynchronousQueue;
@@ -37,6 +41,10 @@ import org.apache.solr.security.HttpClientBuilderPlugin;
 import org.apache.solr.update.processor.DistributedUpdateProcessor;
 import org.apache.solr.update.processor.DistributingUpdateProcessorFactory;
 import org.apache.solr.util.stats.InstrumentedHttpListenerFactory;
+import org.eclipse.jetty.client.AbstractConnectionPool;
+import org.eclipse.jetty.client.ConnectionPool;
+import org.eclipse.jetty.client.Destination;
+import org.eclipse.jetty.client.transport.HttpDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -171,6 +179,51 @@ public class UpdateShardHandler implements SolrInfoBean {
     recoveryExecutor =
         solrMetricsContext.instrumentedExecutorService(
             recoveryExecutor, "solr.core.executor", "recoveryExecutor", getCategory());
+
+    final AttributeKey<String> clientKey = AttributeKey.stringKey("client");
+    solrMetricsContext.observableLongGauge(
+        "solr.update.client.connections",
+        "Jetty HTTP connection pool counters for inter-node update and recovery clients. "
+            + "state=active: connections currently processing a request; "
+            + "state=idle: connections open but waiting for a request; "
+            + "state=pending: TCP handshakes in progress; "
+            + "state=queued: requests waiting because all connections are busy. "
+            + "Use to detect pool saturation (queued > 0) or over-provisioning (idle >> active).",
+        measurement -> {
+          recordConnPoolStats(
+              measurement, updateOnlyClient.getHttpClient(), Attributes.of(clientKey, "update"));
+          recordConnPoolStats(
+              measurement,
+              recoveryOnlyClient.getHttpClient(),
+              Attributes.of(clientKey, "recovery"));
+        });
+  }
+
+  private static void recordConnPoolStats(
+      ObservableLongMeasurement measurement,
+      org.eclipse.jetty.client.HttpClient httpClient,
+      Attributes baseAttrs) {
+    long active = 0, idle = 0, pending = 0, queued = 0;
+    List<Destination> destinations = httpClient.getDestinations();
+    for (Destination dest : destinations) {
+      if (dest instanceof HttpDestination httpDest) {
+        ConnectionPool pool = httpDest.getConnectionPool();
+        if (pool instanceof AbstractConnectionPool acp) {
+          active += acp.getActiveConnectionCount();
+          idle += acp.getIdleConnectionCount();
+          pending += acp.getPendingConnectionCount();
+        }
+        queued += httpDest.getQueuedRequestCount();
+      }
+    }
+    measurement.record(
+        active, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "active").build());
+    measurement.record(
+        idle, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "idle").build());
+    measurement.record(
+        pending, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "pending").build());
+    measurement.record(
+        queued, Attributes.builder().putAll(baseAttrs).put(STATE_KEY_ATTR, "queued").build());
   }
 
   @Override
