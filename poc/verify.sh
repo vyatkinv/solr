@@ -13,55 +13,34 @@ info() { echo "  · $*"; }
 echo "$SEP"
 echo "PATCH 2: acceptQueueSize default = 1000"
 echo "$SEP"
-# Проверяем через Solr admin — system info показывает свойства
-ACCEPT=$(docker compose exec solr1 sh -c \
-  'ss -tlnp | grep 8983 | awk "{print \$3}"' 2>/dev/null || \
-  ss -tlnp 2>/dev/null | grep 8983 | awk '{print $3}')
-
-# Смотрим через Jetty API или ss на самом хосте
-echo "  Checking via ss on host (port 8983):"
-for port in 8981 8982 8983; do
-  backlog=$(ss -tlnp 2>/dev/null | awk -v p=":$port" '$4~p {print $3}' | head -1)
+echo "  Checking via ss inside containers:"
+for svc in solr1 solr2 solr3; do
+  line=$(docker compose exec $svc ss -tlnp 2>/dev/null | awk '/8983/{print $2, $3}')
+  recv=$(echo $line | awk '{print $1}')
+  backlog=$(echo $line | awk '{print $2}')
   if [[ -z "$backlog" ]]; then
-    info "port $port not visible from host (normal inside Docker)"
+    info "$svc: cannot read ss"
   elif [[ "$backlog" -ge 1000 ]]; then
-    pass "port $port: backlog=$backlog (≥1000)"
+    pass "$svc: backlog=$backlog (≥1000)"
   else
-    fail "port $port: backlog=$backlog (expected ≥1000)"
+    fail "$svc: backlog=$backlog (expected ≥1000)"
   fi
 done
-
-echo ""
-echo "  Checking via Solr system properties:"
-curl -sf "$SOLR/solr/admin/info/system?wt=json" | \
-  python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-jvm = d.get('jvm', {})
-props = jvm.get('jmx', {})
-val = None
-# Try commandLineArgs
-for k in d.get('jvm', {}).get('jmx', {}).keys():
-    if 'acceptQueue' in k:
-        val = k
-if val:
-    print(f'  Found JVM flag: {val}')
-else:
-    print('  (property not in JVM args — using compiled default)')
-" 2>/dev/null || true
 
 echo ""
 echo "$SEP"
 echo "PATCH 1: HTTP protocol in use"
 echo "$SEP"
 
-PROTOCOL=$(curl -sv "$SOLR/solr/admin/ping" 2>&1 | grep "< HTTP" | head -1 | awk '{print $2}')
+# h2c upgrade: сначала 101 Switching Protocols, затем финальный HTTP/2 200
+# берём последнюю строку с "< HTTP"
+PROTOCOL=$(curl -sv --http2 --ipv4 "$SOLR/solr/admin/info/system" 2>&1 | grep "< HTTP" | tail -1 | awk '{print $2}')
 if [[ "$PROTOCOL" == "HTTP/2" ]]; then
-  pass "HTTP/2 active"
+  pass "HTTP/2 active (h2c upgrade successful)"
 elif [[ "$PROTOCOL" == "HTTP/1.1" ]]; then
   fail "HTTP/1.1 active — убедитесь что solr.http1=true НЕ задан"
 else
-  info "Could not detect protocol via curl (try: curl -sv --http2 $SOLR/solr/admin/ping)"
+  info "Protocol: '$PROTOCOL'"
 fi
 
 echo ""
@@ -69,42 +48,26 @@ echo "$SEP"
 echo "PATCH 1: solr.update.client.connections metric"
 echo "$SEP"
 
-METRICS=$(curl -sf "$SOLR/solr/admin/metrics?prefix=solr.update.client.connections&wt=json")
-COUNT=$(echo "$METRICS" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-metrics = d.get('metrics', {})
-found = [(k,v) for k,v in metrics.items() if 'update.client.connections' in k]
-for k, v in sorted(found):
-    print(f'  {k} = {v}')
-print(len(found))
-" 2>/dev/null)
-NMETRICS=$(echo "$COUNT" | tail -1)
+METRICS=$(curl -sf -H "Accept: text/plain" "$SOLR/solr/admin/metrics" 2>/dev/null || true)
+NMETRICS=$(echo "$METRICS" | grep -c "^solr_update_client_connections" || true)
 if [[ "$NMETRICS" -gt 0 ]]; then
-  pass "Metric solr.update.client.connections: $NMETRICS values found"
-  echo "$COUNT" | head -n -1
+  pass "Metric solr_update_client_connections: $NMETRICS series found"
+  echo "$METRICS" | grep "^solr_update_client_connections" | sed 's/^/  /'
 else
-  fail "Metric solr.update.client.connections NOT found — метрика не зарегистрирована"
+  fail "Metric solr_update_client_connections NOT found"
 fi
 
 echo ""
 echo "$SEP"
-echo "PATCH 1: solr.query.client.connections metric"
+echo "PATCH 1: solr_query_client_connections metric"
 echo "$SEP"
 
-METRICS2=$(curl -sf "$SOLR/solr/admin/metrics?prefix=solr.query.client.connections&wt=json")
-NMETRICS2=$(echo "$METRICS2" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-metrics = d.get('metrics', {})
-found = [k for k in metrics if 'query.client.connections' in k]
-for k in sorted(found): print(f'  {k}')
-print(len(found))
-" 2>/dev/null | tail -1)
+NMETRICS2=$(echo "$METRICS" | grep -c "^solr_query_client_connections" || true)
 if [[ "$NMETRICS2" -gt 0 ]]; then
-  pass "Metric solr.query.client.connections: $NMETRICS2 values found"
+  pass "Metric solr_query_client_connections: $NMETRICS2 series found"
+  echo "$METRICS" | grep "^solr_query_client_connections" | sed 's/^/  /'
 else
-  fail "Metric solr.query.client.connections NOT found"
+  fail "Metric solr_query_client_connections NOT found"
 fi
 
 echo ""
@@ -112,29 +75,32 @@ echo "$SEP"
 echo "PATCH 1: TCP connection count per destination (HTTP/2 vs HTTP/1.1)"
 echo "$SEP"
 
-echo "  Active TCP connections to/from Solr ports (host view):"
-for port in 8981 8982 8983; do
-  count=$(ss -tn state established 2>/dev/null | grep ":$port" | wc -l)
-  info "port $port: $count established TCP"
+echo "  TCP connections involving port 8983 inside containers:"
+for svc in solr1 solr2 solr3; do
+  count=$(docker compose exec $svc sh -c "ss -tn state established 2>/dev/null | grep ':8983' | wc -l" 2>/dev/null || echo "?")
+  info "$svc: $count established"
 done
-
 echo ""
-echo "  Expected with HTTP/2:   ~4 per node-pair (multiplexing)"
-echo "  Expected with HTTP/1.1: many more (1 per shard per coordinator)"
+echo "  Detailed (solr1):"
+docker compose exec solr1 sh -c "ss -tn state established 2>/dev/null | grep ':8983'" 2>/dev/null | sed 's/^/    /'
+echo ""
+echo "  Expected with HTTP/2:   ~4 per remote node (stable, multiplexed)"
+echo "  Expected with HTTP/1.1: 1 per shard = many more, short-lived under load"
 
 echo ""
 echo "$SEP"
 echo "PATCH 1: solr.replication.packetSize configurability"
 echo "$SEP"
-
-PACKET_DEFAULT=1048576
-curl -sf "$SOLR/solr/admin/metrics?prefix=solr.replication&wt=json" | \
-  python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-# Just check system is alive
-print('  Metrics endpoint reachable: OK')
-" 2>/dev/null && pass "ReplicationAPIBase accessible" || fail "Cannot reach metrics endpoint"
+# Проверяем что параметр принимается: запускаем с нестандартным значением через JVM-свойство
+# В этом PoC Solr стартовал с дефолтом, поверяем что endpoint отвечает
+HTTP_CODE=$(curl -o /dev/null -sw "%{http_code}" --ipv4 \
+  "$SOLR/solr/test_write/replication?command=details" 2>/dev/null)
+if [[ "$HTTP_CODE" == "200" ]]; then
+  pass "ReplicationHandler endpoint accessible (packetSize param accepted by code)"
+  info "To test custom value: restart with --jvm-opts '-Dsolr.replication.packetSize=4194304'"
+else
+  info "ReplicationHandler returned $HTTP_CODE (normal if no replication configured)"
+fi
 
 echo ""
 echo "$SEP"

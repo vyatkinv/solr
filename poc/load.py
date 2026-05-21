@@ -20,7 +20,7 @@ from collections import deque
 SOLR_URL = "http://localhost:8983/solr/test_write/update?commit=false"
 HEADERS = {"Content-Type": "application/json"}
 
-stats = {"sent": 0, "errors": 0}
+stats: dict = {"sent": 0, "errors": 0}
 stats_lock = threading.Lock()
 rate_window = deque(maxlen=10)  # last 10 seconds for moving avg
 
@@ -100,6 +100,7 @@ class AtomicCounter:
 
 
 def main():
+    global SOLR_URL
     p = argparse.ArgumentParser()
     p.add_argument("--rate", type=int, default=5000, help="Target doc/sec (total)")
     p.add_argument("--duration", type=int, default=30, help="Duration in seconds")
@@ -107,8 +108,6 @@ def main():
     p.add_argument("--threads", type=int, default=4, help="Sender threads")
     p.add_argument("--url", default=SOLR_URL, help="Solr update URL")
     args = p.parse_args()
-
-    global SOLR_URL
     SOLR_URL = args.url
 
     rate_per_thread = args.rate // args.threads
