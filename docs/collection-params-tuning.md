@@ -370,10 +370,9 @@ ss -tn state established '( dport = :8983 )' | awk '{print $5}' | \
 # Скорость появления новых соединений
 watch -n 5 'ss -s | grep -E "TCP|estab"'
 
-# HTTP/2 pool через патч
-curl -s 'http://localhost:8983/solr/admin/metrics?prefix=solr.update.client.connections&wt=json' | \
-  python3 -c "import json,sys; d=json.load(sys.stdin); \
-  [print(m['name'],'=',m['value']) for m in d.get('metrics',[])]"
+# HTTP/2 pool через патч (Solr 11: только Prometheus-формат)
+curl -s -H "Accept: text/plain" 'http://localhost:8983/solr/admin/metrics' | \
+  grep -E '^solr_update_client_connections'
 
 # Размер accept queue (должен быть 0 в steady state)
 ss -tlnp | grep 8983

@@ -2,7 +2,7 @@
 
 Проверяет три вещи:
 1. `acceptQueueSize` default = 1000 (патч 2)
-2. Новые метрики `solr.update.client.connections` и `solr.query.client.connections` (патч 1)
+2. Новые метрики `solr_update_client_connections` и `solr_query_client_connections` (патч 1)
 3. HTTP/2 vs HTTP/1.1: разница в числе TCP-соединений под нагрузкой
 
 ---
@@ -18,6 +18,9 @@
 ## Быстрый старт
 
 ```bash
+# 0. Из корня репозитория — собрать дистрибутив (~5 минут)
+./gradlew -p solr/packaging assemble -x test
+
 cd poc/
 
 # 1. Скопировать дистрибутив в рабочую директорию
@@ -26,8 +29,11 @@ cp ../solr/packaging/build/distributions/solr-11.0.0-SNAPSHOT.tgz .
 # 2. Собрать образ и запустить кластер
 docker compose up -d --build
 
-# 3. Дождаться готовности всех 3 нод (Solr стартует ~30 сек)
+# 3. Дождаться готовности всех 3 нод (health check ~30–60 сек)
+#    Все три должны показать "healthy" в колонке Status:
 docker compose ps
+#    Или подождать автоматически:
+#    until [ "$(docker compose ps --format json | python3 -c "import sys,json; d=[json.loads(l) for l in sys.stdin]; print(sum(1 for x in d if x.get('Health')=='healthy'))")" = "3" ]; do sleep 5; done
 
 # 4. Создать тестовую коллекцию (3 шарда, RF=2)
 chmod +x setup-collection.sh && ./setup-collection.sh
@@ -81,19 +87,27 @@ docker compose exec solr1 ss -tlnp | grep 8983
 ```
 
 ### Метрики connection pool (патч 1)
+
+Solr 11 отдаёт метрики только в формате Prometheus/OpenMetrics (`wt=json` возвращает 400).
+
 ```bash
-curl 'http://localhost:8983/solr/admin/metrics?prefix=solr.update.client.connections&wt=json' | python3 -m json.tool
-curl 'http://localhost:8983/solr/admin/metrics?prefix=solr.query.client.connections&wt=json'  | python3 -m json.tool
+# Все connection-pool метрики разом
+curl -s -H "Accept: text/plain" 'http://localhost:8983/solr/admin/metrics' | \
+  grep -E '^solr_(update|query)_client_connections'
+
+# Только update-клиент
+curl -s -H "Accept: text/plain" 'http://localhost:8983/solr/admin/metrics' | \
+  grep '^solr_update_client_connections'
 ```
 
-Ожидаемые ключи метрик:
+Ожидаемый вывод (Prometheus text format):
 ```
-solr.update.client.connections{client=update,state=active}
-solr.update.client.connections{client=update,state=idle}
-solr.update.client.connections{client=update,state=pending}
-solr.update.client.connections{client=update,state=queued}
-solr.update.client.connections{client=recovery,...}
-solr.query.client.connections{state=active}
+solr_update_client_connections{client="update",state="active"} 2.0
+solr_update_client_connections{client="update",state="idle"}   1.0
+solr_update_client_connections{client="update",state="pending"} 0.0
+solr_update_client_connections{client="update",state="queued"}  0.0
+solr_update_client_connections{client="recovery",state="active"} 0.0
+solr_query_client_connections{state="active"} 0.0
 ...
 ```
 

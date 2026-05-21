@@ -52,14 +52,16 @@
 
 ### Добавлено патчем `0001-unhardcode-http-replication-params-and-add-metrics.patch`
 
-| Метрика | Labels | Что показывает | Ключевой индикатор |
+Метрики экспортируются в Prometheus text format (имена с подчёркиваниями):
+
+| Метрика (Prometheus) | Labels | Что показывает | Ключевой индикатор |
 |---|---|---|---|
-| `solr.update.client.connections` | `client=update, state=active` | Соединений, обрабатывающих запрос | baseline |
-| `solr.update.client.connections` | `client=update, state=idle` | Открытых пустых соединений | если >> active → пул избыточен |
-| `solr.update.client.connections` | `client=update, state=pending` | TCP-handshake в процессе | если > 0 стабильно → частые разрывы |
-| `solr.update.client.connections` | `client=update, state=queued` | Запросов, ждущих соединения | **> 0 → пул насыщен** |
-| `solr.update.client.connections` | `client=recovery, state=*` | То же для recovery-клиента | — |
-| `solr.query.client.connections` | `state=*` | То же для query fanout клиента | — |
+| `solr_update_client_connections` | `client="update", state="active"` | Соединений, обрабатывающих запрос | baseline |
+| `solr_update_client_connections` | `client="update", state="idle"` | Открытых пустых соединений | если >> active → пул избыточен |
+| `solr_update_client_connections` | `client="update", state="pending"` | TCP-handshake в процессе | если > 0 стабильно → частые разрывы |
+| `solr_update_client_connections` | `client="update", state="queued"` | Запросов, ждущих соединения | **> 0 → пул насыщен** |
+| `solr_update_client_connections` | `client="recovery", state=*` | То же для recovery-клиента | — |
+| `solr_query_client_connections` | `state=*` | То же для query fanout клиента | — |
 
 ### OS-уровень (собирать на каждой ноде)
 
@@ -184,20 +186,21 @@ while true; do
   # TCP count
   TCP=$(ss -tn state established '( dport = :8983 or sport = :8983 )' 2>/dev/null | wc -l)
 
-  # Solr metrics via Prometheus endpoint (если подключён solr-exporter)
-  # Или через /solr/admin/metrics?wt=json
-  METRICS=$(curl -s "${SOLR_URL}/admin/metrics?group=jvm,solr&wt=json&compact=true" 2>/dev/null)
+  # Solr 11: метрики только в Prometheus/OpenMetrics формате (wt=json возвращает 400)
+  METRICS=$(curl -s -H "Accept: text/plain" "${SOLR_URL}/admin/metrics" 2>/dev/null)
 
-  # Парсинг (адаптировать под реальные имена метрик в вашей версии)
-  ACTIVE_UPDATE=$(echo "$METRICS" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print(d.get('metrics', {}).get('solr.node', {})
-       .get('solr.update.client.connections.active.update', {})
-       .get('value', 0))
-" 2>/dev/null || echo 0)
+  # Парсинг Prometheus text format: последнее поле строки = значение
+  get_metric() {
+    echo "$METRICS" | grep "^${1}{" | grep "${2}" | awk '{print $NF}' | head -1
+  }
 
-  echo "${TS},${TCP},${ACTIVE_UPDATE},0,0,0,0,0,0" >> "$OUTPUT"
+  ACTIVE_UPDATE=$(get_metric "solr_update_client_connections" 'client="update",state="active"' || echo 0)
+  IDLE_UPDATE=$(get_metric   "solr_update_client_connections" 'client="update",state="idle"'   || echo 0)
+  QUEUED_UPDATE=$(get_metric "solr_update_client_connections" 'client="update",state="queued"' || echo 0)
+  ACTIVE_RECV=$(get_metric   "solr_update_client_connections" 'client="recovery",state="active"' || echo 0)
+  QUEUED_RECV=$(get_metric   "solr_update_client_connections" 'client="recovery",state="queued"' || echo 0)
+
+  echo "${TS},${TCP},${ACTIVE_UPDATE:-0},${IDLE_UPDATE:-0},${QUEUED_UPDATE:-0},${ACTIVE_RECV:-0},${QUEUED_RECV:-0},0,0" >> "$OUTPUT"
   sleep 5
 done
 ```
