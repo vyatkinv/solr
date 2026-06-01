@@ -21,6 +21,7 @@ import static org.apache.zookeeper.Watcher.Event.KeeperState.Disconnected;
 import static org.apache.zookeeper.Watcher.Event.KeeperState.Expired;
 
 import java.lang.invoke.MethodHandles;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.apache.solr.common.SolrException;
@@ -33,6 +34,14 @@ import org.slf4j.LoggerFactory;
 
 public class ConnectionManager implements Watcher {
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+
+  /**
+   * Max random jitter (ms) added before running onReconnect operations. Spreads the thundering-herd
+   * of ZK writes that would otherwise hit ZooKeeper simultaneously from all cluster nodes after a
+   * session expiry. Configurable via -Dsolr.zookeeper.reconnect.jitterMaxMs. Default 3000ms.
+   */
+  private static final long RECONNECT_JITTER_MAX_MS =
+      Long.getLong("solr.zookeeper.reconnect.jitterMaxMs", 3000L);
 
   private final String name;
 
@@ -172,6 +181,7 @@ public class ConnectionManager implements Watcher {
         }
       }
 
+      int reconnectAttempt = 0;
       do {
         // This loop will break if a valid connection is made. If a connection is not made then it
         // will repeat and try again to create a new connection.
@@ -196,6 +206,25 @@ public class ConnectionManager implements Watcher {
                     }
 
                     if (onReconnect != null) {
+                      // Randomise the moment each node starts heavy ZK work (watcher
+                      // re-registration, ephemeral node creation, leader election).
+                      // Without this, all N nodes fire onReconnect simultaneously after a
+                      // mass session expiry and produce a write storm that expires sessions
+                      // again before recovery completes (thundering-herd loop).
+                      if (RECONNECT_JITTER_MAX_MS > 0) {
+                        long jitter = ThreadLocalRandom.current().nextLong(RECONNECT_JITTER_MAX_MS);
+                        if (jitter > 0) {
+                          log.info(
+                              "Delaying onReconnect by {}ms to reduce ZooKeeper write storm", jitter);
+                          try {
+                            Thread.sleep(jitter);
+                          } catch (InterruptedException ie) {
+                            closeKeeper(keeper);
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(ie);
+                          }
+                        }
+                      }
                       onReconnect.command();
                     }
 
@@ -223,8 +252,18 @@ public class ConnectionManager implements Watcher {
           break;
 
         } catch (Exception e) {
-          log.error("Could not connect due to error, sleeping for 1s and trying again", e);
-          waitSleep(1000);
+          // Exponential backoff with jitter so that all nodes do not hammer ZooKeeper
+          // in lock-step. Base = 1s, cap = 30s: 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
+          long baseMs = Math.min(30_000L, 1_000L * (1L << Math.min(reconnectAttempt, 5)));
+          long jitter = ThreadLocalRandom.current().nextLong(baseMs / 2 + 1);
+          long sleepMs = baseMs + jitter;
+          log.error(
+              "Could not connect to ZooKeeper (attempt {}), sleeping {}ms before retry",
+              reconnectAttempt + 1,
+              sleepMs,
+              e);
+          waitSleep(sleepMs);
+          reconnectAttempt++;
         }
 
       } while (!isClosed());

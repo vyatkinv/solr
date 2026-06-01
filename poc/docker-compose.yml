@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+
+  # ── ZooKeeper ────────────────────────────────────────────────────────────
+  zookeeper:
+    image: zookeeper:3.9.1
+    hostname: zookeeper
+    environment:
+      ZOO_MY_ID: 1
+      # Short tick so session cleanup is fast during the demo
+      ZOO_TICK_TIME: 1000
+      ZOO_CFG_EXTRA: |
+        maxSessionTimeout=15000
+        4lw.commands.whitelist=*
+    ports:
+      - "2181:2181"
+    networks:
+      - poc_net
+    healthcheck:
+      test: ["CMD", "zkServer.sh", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Toxiproxy – controllable TCP proxy ───────────────────────────────────
+  # Lets us inject a network partition to trigger real ZK session expiry.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    hostname: toxiproxy
+    command: ["-host", "0.0.0.0", "-port", "8474", "-config", "/etc/toxiproxy.json"]
+    volumes:
+      - ./toxiproxy.json:/etc/toxiproxy.json:ro
+    ports:
+      - "8474:8474"
+      - "21810:21810"   # ZK proxy port exposed to host (optional)
+    networks:
+      - poc_net
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+
+  # ── POC runner ───────────────────────────────────────────────────────────
+  poc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    hostname: poc
+    depends_on:
+      - toxiproxy
+    environment:
+      ZK_DIRECT:       "zookeeper:2181"
+      ZK_PROXY:        "toxiproxy:21810"
+      TOXIPROXY_URL:   "http://toxiproxy:8474"
+      N_NODES:         "20"
+      SESSION_TIMEOUT_MS: "8000"
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - poc_net
+
+networks:
+  poc_net:
+    driver: bridge

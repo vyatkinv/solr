@@ -173,6 +173,9 @@ public class SolrZkClient implements Closeable {
             onReconnect,
             beforeReconnect,
             SolrZkClient.this::isClosed);
+    // Give ZkCmdExecutor access to ConnectionManager so it can wait for a new session before
+    // retrying operations that failed with SessionExpiredException.
+    zkCmdExecutor.setConnectionManager(connManager);
 
     try {
       strat.connect(

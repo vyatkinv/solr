@@ -1208,7 +1208,27 @@ public class ZkController implements Closeable {
                     zkClient.getZkACLProvider().getACLsToAdd(nodePath),
                     CreateMode.EPHEMERAL)));
 
-    zkClient.multi(ops, true);
+    try {
+      zkClient.multi(ops, true);
+    } catch (KeeperException.NodeExistsException e) {
+      // ZooKeeper deletes ephemeral nodes from an expired session asynchronously on the server
+      // side. A new session can be established before that cleanup finishes, causing
+      // NodeExistsException on the create ops. Delete every stale node individually (ignoring
+      // NoNodeException in case ZK already cleaned it up between our check and delete), then
+      // retry the atomic multi-create under the new session.
+      log.warn(
+          "Ephemeral live node(s) for {} already exist (stale from expired session) - "
+              + "removing and recreating under new session",
+          nodeName);
+      for (Op op : ops) {
+        try {
+          zkClient.delete(op.getPath(), -1, true);
+        } catch (NoNodeException ignored) {
+          // ZK finished its own cleanup between our catch and this delete — that's fine.
+        }
+      }
+      zkClient.multi(ops, true);
+    }
   }
 
   public void removeEphemeralLiveNode() throws KeeperException, InterruptedException {

@@ -140,6 +140,11 @@ public class PerReplicaStatesOps {
       try {
         persist(operations, znode, zkClient);
         return;
+      } catch (KeeperException.SessionExpiredException | KeeperException.AuthFailedException e) {
+        // Unrecoverable within this call: the ZK session is gone. Propagate so callers (e.g.
+        // ZkController.publish) can decide whether to skip or wait for reconnect. State will be
+        // re-published by onReconnect -> RegisterCoreAsync after the new session is established.
+        throw e;
       } catch (KeeperException.NodeExistsException | KeeperException.NoNodeException e) {
         // state is stale
         if (log.isInfoEnabled()) {

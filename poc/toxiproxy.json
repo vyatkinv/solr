@@ -1,0 +1,9 @@
+[
+  {
+    "name": "zookeeper",
+    "listen": "0.0.0.0:21810",
+    "upstream": "zookeeper:2181",
+    "enabled": true,
+    "toxics": []
+  }
+]
