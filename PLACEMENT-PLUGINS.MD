@@ -364,6 +364,144 @@ live-ноды с этим списком и передаёт результат 
 ввода пустой ноды — та дыра, которую мягкая модель не закрывает, отсюда процедурное
 (BALANCE_REPLICAS) или структурное (Affinity + зоны) решение.
 
+### Проверка ветки main (снимок 2026-06-08)
+
+Признаков того, что проблему «осознали и вернули» лимит, в main нет:
+
+- `maxShardsPerNode` не возвращён; в `CollectionTooManyReplicasTest` встроенную анти-аффинность
+  «одна реплика шарда на ноду» прямо называют «equivalent to maxShardsPerNode=1» — вопрос считают
+  закрытым этим (более слабым) ограничением.
+- Набор плагинов тот же (4 штуки), дефолт всё ещё Simple, TODO про SOLR-16492 (сделать Affinity
+  дефолтом) висит без движения.
+- `maxReplicasPerShardInDomain` в Affinity по-прежнему объявлен, но не используется.
+- `OrderedNodePlacementPlugin` переработан (SOLR-17331: `Pending`→`Outstanding`, счётчик
+  `placementCount` против зацикливания requeue), но потолков «реплик на ноду» не появилось.
+- В changelog 9.6+ по placement только фиксы/оптимизации (SOLR-17257, SOLR-17331, SOLR-17644,
+  SOLR-17079 — объявление плагинов в `solr.xml`).
+
+## Предложение для Apache JIRA: вернуть per-node лимит как opt-in
+
+### Набросок тикета
+
+**Project:** SOLR · **Issue Type:** Improvement · **Components:** SolrCloud · **Affects:** 9.x, main
+
+**Summary:**
+
+> Weight-based placement plugins overload newly added empty nodes; add an opt-in per-node
+> replica cap (successor of maxShardsPerNode)
+
+**Description:**
+
+```
+h3. Problem
+
+All built-in weight-based placement plugins (SimplePlacementFactory — the default,
+MinimizeCoresPlacementFactory, AffinityPlacementFactory) share the same greedy strategy via
+OrderedNodePlacementPlugin: place each replica on the node with the lowest weight, where the
+weight is dominated by the replica/core count on the node.
+
+When a fresh empty node joins the cluster, it strictly wins every placement comparison until its
+replica count catches up with the rest of the cluster. In practice this means every shard of
+every newly created collection lands on the new node. For a write-heavy new collection this
+concentrates ~100% of its indexing load on a single node, causing CPU saturation / thread
+starvation and SLA violations. The tie-requeue logic in OrderedNodePlacementPlugin does not
+help: the empty node is not tied, it is a strict minimum.
+
+h3. Existing mitigations and why they are insufficient
+
+* {{BALANCE_REPLICAS}} (SOLR-17038): works, but it is a runbook procedure, not a cluster
+  invariant. There is a race window between node join and balance completion, and every operator
+  has to know to do it.
+* {{createNodeSet}} on CREATE: client-side discipline; not enforced for later
+  ADDREPLICA/SPLITSHARD, ignored by CollectionsRepairEventListener and MOVEREPLICA.
+* Affinity {{availability_zone}} / {{spreadAcrossDomains}} / {{replica_type=PULL}} fencing:
+  partial or operationally heavy (node restarts to change sysprops), and unavailable to users of
+  the default plugin.
+* {{maxShardsPerNode}} used to cap exactly this by construction, but was removed in SOLR-12847
+  without a functional replacement. The related Affinity config {{maxReplicasPerShardInDomain}}
+  is declared but has been a no-op since the SOLR-16806 rewrite.
+
+h3. Proposal
+
+Re-introduce a hard per-node cap as a strictly opt-in constraint, disabled by default, enforced
+generically in OrderedNodePlacementPlugin so all built-in plugins (including the default) and
+custom subclasses get it for free:
+
+* A per-collection property, e.g. {{placement.maxReplicasPerNode}} — maximum number of replicas
+  of the given collection allowed on a single node (any shard, any type). Unset / {{-1}} =
+  unlimited = exactly today's behavior.
+* The placement API already supports reading it with no interface changes:
+  {{SolrCollection.getCustomProperty()}} resolves {{property.*}} entries of the collection
+  state, and MODIFYCOLLECTION already persists arbitrary {{property.*}} keys.
+* Enforcement point: the base {{WeightedNode.canAddReplica()}} — which is consulted both by
+  {{computePlacements()}} and {{computeBalancing()}}, so placements, balancing and repair all
+  respect the cap automatically.
+* The name deliberately differs from the old {{maxShardsPerNode}} (which was a frequent source
+  of confusion, since it actually counted replicas).
+
+h3. Compatibility
+
+Default behavior is unchanged: the constraint only activates when the property is explicitly set
+on a collection. No changes to plugin configs, no new APIs, no upgrade impact.
+
+I am willing to work on a PR if the approach is acceptable.
+```
+
+### Рекомендованная реализация (opt-in, по умолчанию выключено)
+
+**Почему свойство коллекции, а не конфиг плагина.** Три из четырёх плагинов (включая дефолтный
+Simple) — `NoConfig`; добавление конфига им — ломающее изменение сигнатур фабрик. А канал
+«свойство коллекции → плагин» уже существует и никем не используется:
+`SolrCollection.getCustomProperty(name)` читает `property.<name>` из состояния коллекции
+(`SimpleClusterAbstractionsImpl.SolrCollectionImpl#getCustomProperty`), а MODIFYCOLLECTION уже
+умеет записывать произвольные `property.*` в state (`CollectionMutator#modifyCollection`).
+Плюс семантика правильная: лимит — свойство коллекции, а не глобальная политика.
+
+**Точка врезки — одна**: базовый `WeightedNode.canAddReplica()` в `OrderedNodePlacementPlugin`
+(сейчас проверяет только «нет второй реплики того же шарда»):
+
+```java
+// в WeightedNode.canAddReplica(), после существующей проверки шарда
+String maxStr = replica.getShard().getCollection()
+    .getCustomProperty("placement.maxReplicasPerNode"); // property.placement.maxReplicasPerNode
+if (maxStr != null) {
+    int max = Integer.parseInt(maxStr);
+    if (max > 0 && getReplicasForCollectionOnNode(collectionName) >= max) return false;
+}
+```
+
+Поскольку `canAddReplica()` вызывается и из `computePlacements`, и из `computeBalancing`, и
+опосредованно из автолечения — лимит соблюдается везде без дополнительного кода. Побочное место
+одно: у Simple `canAddReplica` переопределён (`return true`) — нужно позвать `super`.
+
+**Включение пользователем:**
+
+```
+MODIFYCOLLECTION&collection=hot_coll&property.placement.maxReplicasPerNode=2
+```
+
+(запись в state работает уже сейчас; сахар в CREATE — отдельным коммитом при желании).
+
+**Детали, которые спросят в ревью — заложить сразу:**
+
+- fail-fast как у старого `maxShardsPerNode`: если `numShards × RF > cap × |targetNodes|`,
+  кандидаты закончатся и размещение упадёт с `PlacementException` — улучшить сообщение об
+  ошибке, явно указав на лимит;
+- валидация значения: нечисловое/нулевое — игнорировать с warning, не ронять размещение;
+- взаимодействие с DELETENODE/REPLACENODE: при жёстком лимите переносить реплики может быть
+  некуда — ожидаемо, но задокументировать;
+- тесты: юнит на `canAddReplica` для всех четырёх плагинов; интеграционный сценарий «пустая
+  нода + CREATE с лимитом» (инфраструктура в `solr/core/src/test/.../cluster/placement/`);
+  тест, что balancing не нарушает лимит;
+- имя: не возвращать `maxShardsPerNode` — его убирали в том числе из-за путаницы
+  «shards vs replicas»; `placement.maxReplicasPerNode` точнее.
+
+**Почему это «никому не мешает»:** без свойства — ноль изменений поведения (одна дешёвая
+проверка `getCustomProperty` → null); нет новых параметров API, миграций state и изменений
+интерфейсов placement API — минимальная поверхность для возражений. Ожидаемый контраргумент в
+обсуждении — «сделайте это конфигом Affinity»; ответ: аномалия воспроизводится именно на
+дефолтном плагине, решение должно быть доступно без перехода на Affinity.
+
 ## Как написать свой плагин
 
 1. Реализовать `PlacementPluginFactory<MyConfig>` (конфиг-бин реализует `PlacementPluginConfig`,
