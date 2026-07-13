@@ -61,6 +61,38 @@ import org.slf4j.LoggerFactory;
 public abstract class OrderedNodePlacementPlugin implements PlacementPlugin {
   private static final Logger log = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
+  /**
+   * Name of an optional collection custom property limiting how many replicas of that collection
+   * (any shard, any replica type) can live on a single node.
+   *
+   * <p>It is set on a collection via {@code property.placement.maxReplicasPerNode}, e.g. with
+   * MODIFYCOLLECTION. When the property is absent, blank or non-positive, no limit is enforced,
+   * which is the default behavior. Invalid (non-integer) values are ignored with a warning.
+   */
+  public static final String MAX_REPLICAS_PER_NODE_PROPERTY = "placement.maxReplicasPerNode";
+
+  /**
+   * Parse the {@link #MAX_REPLICAS_PER_NODE_PROPERTY} custom property of the given collection.
+   *
+   * @return the per-node replica limit for the collection, or -1 if no valid limit is set
+   */
+  static int getMaxReplicasPerNode(SolrCollection collection) {
+    String value = collection.getCustomProperty(MAX_REPLICAS_PER_NODE_PROPERTY);
+    if (value == null || value.isBlank()) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(value.trim());
+    } catch (NumberFormatException e) {
+      log.warn(
+          "Collection {} has an invalid value for the {} property, ignoring it: {}",
+          collection.getName(),
+          MAX_REPLICAS_PER_NODE_PROPERTY,
+          value);
+      return -1;
+    }
+  }
+
   @Override
   public List<PlacementPlan> computePlacements(
       Collection<PlacementRequest> requests, PlacementContext placementContext)
@@ -173,15 +205,23 @@ public abstract class OrderedNodePlacementPlugin implements PlacementPlugin {
           }
 
           if (!retryRequestLater && replicasPlaced < replicaCount) {
+            int maxReplicasPerNode = getMaxReplicasPerNode(solrCollection);
             throw new PlacementException(
                 String.format(
                     Locale.ROOT,
-                    "Not enough eligible nodes to place %d replica(s) of type %s for shard %s of collection %s. Only able to place %d replicas.",
+                    "Not enough eligible nodes to place %d replica(s) of type %s for shard %s of collection %s. Only able to place %d replicas.%s",
                     replicaCount,
                     replicaType,
                     shardName,
                     solrCollection.getName(),
-                    replicasPlaced));
+                    replicasPlaced,
+                    maxReplicasPerNode > 0
+                        ? String.format(
+                            Locale.ROOT,
+                            " Note: the collection is limited to %d replica(s) per node via the %s property.",
+                            maxReplicasPerNode,
+                            MAX_REPLICAS_PER_NODE_PROPERTY)
+                        : ""));
           }
         }
       }
@@ -407,10 +447,15 @@ public abstract class OrderedNodePlacementPlugin implements PlacementPlugin {
     // a flattened list of all replicas, as computing from the map could be costly
     private final Set<Replica> allReplicas;
 
+    // parsed per-collection "placement.maxReplicasPerNode" values, to avoid re-parsing (and
+    // re-logging warnings for invalid values) on every canAddReplica() call
+    private final Map<String, Integer> maxReplicasPerNodeCache;
+
     public WeightedNode(Node node) {
       this.node = node;
       this.replicas = new HashMap<>();
       this.allReplicas = new HashSet<>();
+      this.maxReplicasPerNodeCache = new HashMap<>();
     }
 
     public Node getNode() {
@@ -449,13 +494,39 @@ public abstract class OrderedNodePlacementPlugin implements PlacementPlugin {
           .orElseGet(Collections::emptySet);
     }
 
+    public int getReplicaCountForCollectionOnNode(String collection) {
+      return replicas.getOrDefault(collection, Collections.emptyMap()).values().stream()
+          .mapToInt(Set::size)
+          .sum();
+    }
+
     public abstract int calcWeight();
 
     public abstract int calcRelevantWeightWithReplica(Replica replica);
 
     public boolean canAddReplica(Replica replica) {
-      // By default, do not allow two replicas of the same shard on a node
-      return getReplicasForShardOnNode(replica.getShard()).isEmpty();
+      // By default, do not allow two replicas of the same shard on a node,
+      // and enforce the collection's optional per-node replica limit
+      return getReplicasForShardOnNode(replica.getShard()).isEmpty()
+          && withinMaxReplicasPerNode(replica);
+    }
+
+    /**
+     * Determine whether adding the given replica to this node would violate the replica's
+     * collection {@link #MAX_REPLICAS_PER_NODE_PROPERTY} limit, if one is set.
+     *
+     * <p>Implementations that override {@link #canAddReplica(Replica)} without calling {@code
+     * super.canAddReplica()} must include this check themselves.
+     *
+     * @return true if the collection has no limit or the limit is not yet reached on this node
+     */
+    protected final boolean withinMaxReplicasPerNode(Replica replica) {
+      SolrCollection collection = replica.getShard().getCollection();
+      int maxReplicasPerNode =
+          maxReplicasPerNodeCache.computeIfAbsent(
+              collection.getName(), n -> getMaxReplicasPerNode(collection));
+      return maxReplicasPerNode <= 0
+          || getReplicaCountForCollectionOnNode(collection.getName()) < maxReplicasPerNode;
     }
 
     private boolean addReplicaToInternalState(Replica replica) {

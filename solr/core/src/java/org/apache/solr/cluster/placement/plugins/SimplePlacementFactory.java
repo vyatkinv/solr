@@ -137,7 +137,9 @@ public class SimplePlacementFactory
 
     @Override
     public boolean canAddReplica(Replica replica) {
-      return true;
+      // Multiple replicas of the same shard on one node are allowed (though heavily penalized by
+      // the weights), but the collection's optional per-node replica limit is still enforced
+      return withinMaxReplicasPerNode(replica);
     }
 
     @Override
