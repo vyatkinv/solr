@@ -18,14 +18,12 @@ package org.apache.solr.cloud;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.solr.SolrTestCaseJ4;
 import org.apache.solr.common.cloud.ConnectionManager;
 import org.apache.solr.common.cloud.SolrZkClient;
@@ -193,7 +191,8 @@ public class ConnectionManagerTest extends SolrTestCaseJ4 {
     long prev = 0;
     for (int attempt = 0; attempt < 6; attempt++) {
       long base = Math.min(30_000L, 1_000L * (1L << Math.min(attempt, 5)));
-      assertTrue("base[" + attempt + "] > base[" + (attempt - 1) + "]", base > prev || base == 30_000L);
+      assertTrue(
+          "base[" + attempt + "] > base[" + (attempt - 1) + "]", base > prev || base == 30_000L);
       prev = base;
     }
   }
