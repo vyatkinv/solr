@@ -17,9 +17,11 @@
 
 package org.apache.solr.cluster.placement;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -38,10 +40,19 @@ class ClusterAbstractionsForTest {
   static class ClusterImpl implements Cluster {
     private final Set<Node> liveNodes = new HashSet<>();
     private final Map<String, SolrCollection> collections = new HashMap<>();
+    private final Map<String, List<String>> collectionAliases;
 
     ClusterImpl(Set<Node> liveNodes, Map<String, SolrCollection> collections) {
+      this(liveNodes, collections, Collections.emptyMap());
+    }
+
+    ClusterImpl(
+        Set<Node> liveNodes,
+        Map<String, SolrCollection> collections,
+        Map<String, List<String>> collectionAliases) {
       this.liveNodes.addAll(liveNodes);
       this.collections.putAll(collections);
+      this.collectionAliases = Collections.unmodifiableMap(collectionAliases);
     }
 
     @Override
@@ -67,6 +78,11 @@ class ClusterAbstractionsForTest {
     @Override
     public Iterable<SolrCollection> collections() {
       return ClusterImpl.this::iterator;
+    }
+
+    @Override
+    public Map<String, List<String>> getCollectionAliases() {
+      return collectionAliases;
     }
   }
 

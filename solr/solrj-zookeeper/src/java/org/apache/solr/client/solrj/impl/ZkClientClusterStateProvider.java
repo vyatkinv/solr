@@ -21,12 +21,14 @@ import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.apache.solr.client.solrj.impl.SolrZkClientTimeout.SolrZkClientTimeoutAware;
 import org.apache.solr.common.AlreadyClosedException;
 import org.apache.solr.common.SolrException;
+import org.apache.solr.common.cloud.Aliases;
 import org.apache.solr.common.cloud.ClusterState;
 import org.apache.solr.common.cloud.DocCollection;
 import org.apache.solr.common.cloud.PerReplicaStatesOps;
@@ -156,6 +158,21 @@ public class ZkClientClusterStateProvider
   @Override
   public List<String> resolveAlias(String alias) {
     return getZkStateReader().getAliases().resolveAliases(alias); // if not an alias, returns itself
+  }
+
+  @Override
+  public Map<String, List<String>> getCollectionAliases() {
+    Aliases aliases = getZkStateReader().getAliases();
+    // Exclude routed aliases (they carry router metadata and are not plain collection lists)
+    Map<String, List<String>> collectionAliases = aliases.getCollectionAliasListMap();
+    Map<String, List<String>> result = new LinkedHashMap<>();
+    collectionAliases.forEach(
+        (alias, collections) -> {
+          if (!aliases.isRoutedAlias(alias)) {
+            result.put(alias, collections);
+          }
+        });
+    return Collections.unmodifiableMap(result);
   }
 
   @Override

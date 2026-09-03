@@ -72,6 +72,15 @@ public abstract class OrderedNodePlacementPlugin implements PlacementPlugin {
   public static final String MAX_REPLICAS_PER_NODE_PROPERTY = "placement.maxReplicasPerNode";
 
   /**
+   * Suffix identifying collection aliases whose members are write "head" collections (see {@link
+   * SimplePlacementFactory.SimplePlacementPlugin} for the write-load balancing built on top of it).
+   * Write-load balancing is active only when the cluster has at least one standard (non routed)
+   * collection alias whose name ends with this suffix; without such aliases, placement behavior is
+   * unchanged.
+   */
+  public static final String WRITE_ALIAS_SUFFIX = "_WRITE";
+
+  /**
    * Parse the {@link #MAX_REPLICAS_PER_NODE_PROPERTY} custom property of the given collection.
    *
    * @return the per-node replica limit for the collection, or -1 if no valid limit is set

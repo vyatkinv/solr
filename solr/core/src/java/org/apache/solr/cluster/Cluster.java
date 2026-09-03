@@ -19,6 +19,8 @@ package org.apache.solr.cluster;
 
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -53,4 +55,17 @@ public interface Cluster {
    * c : cluster.collections()) {...}}.
    */
   Iterable<SolrCollection> collections();
+
+  /**
+   * Returns the full map of standard (non-routed) collection aliases, mapping each alias name to
+   * the list of collections it points to.
+   *
+   * <p>This makes alias membership visible to {@link
+   * org.apache.solr.cluster.placement.PlacementPlugin}s, which have no other access to aliases
+   * (they are stored outside of the cluster state, e.g. in ZooKeeper's {@code /aliases.json}).
+   *
+   * @return never {@code null}; an empty map when the cluster has no standard collection aliases or
+   *     alias enumeration is not supported by the underlying provider.
+   */
+  Map<String, List<String>> getCollectionAliases();
 }

@@ -59,6 +59,8 @@ public class Builders {
 
     private final List<CollectionBuilder> collectionBuilders = new ArrayList<>();
 
+    private final Map<String, List<String>> collectionAliases = new LinkedHashMap<>();
+
     public ClusterBuilder initializeLiveNodes(int countNodes) {
       nodeBuilders = new ArrayList<>();
       for (int n = 0; n < countNodes; n++) {
@@ -81,10 +83,22 @@ public class Builders {
       return this;
     }
 
+    /**
+     * Adds (or replaces) a collection alias visible in the {@link
+     * org.apache.solr.cluster.Cluster#getCollectionAliases()} of the built cluster.
+     *
+     * @param aliasName the alias name
+     * @param collections the collections the alias points to
+     */
+    public ClusterBuilder addAlias(String aliasName, List<String> collections) {
+      collectionAliases.put(aliasName, collections);
+      return this;
+    }
+
     public Cluster build() {
       // TODO if converting all tests to use builders change ClusterImpl ctor to use list of nodes
       return new ClusterAbstractionsForTest.ClusterImpl(
-          new HashSet<>(buildLiveNodes()), buildClusterCollections());
+          new HashSet<>(buildLiveNodes()), buildClusterCollections(), collectionAliases);
     }
 
     public List<Node> buildLiveNodes() {

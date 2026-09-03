@@ -70,6 +70,15 @@ public class DelegatingClusterStateProvider implements ClusterStateProvider {
   }
 
   @Override
+  public Map<String, List<String>> getCollectionAliases() {
+    if (delegate != null) {
+      return delegate.getCollectionAliases();
+    } else {
+      return Collections.emptyMap();
+    }
+  }
+
+  @Override
   public String resolveSimpleAlias(String alias) throws IllegalArgumentException {
     if (delegate != null) {
       return delegate.resolveSimpleAlias(alias);

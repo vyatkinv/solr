@@ -19,6 +19,7 @@ package org.apache.solr.client.solrj.impl;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -65,6 +66,20 @@ public interface ClusterStateProvider extends SolrCloseable {
    * list of the input if it's not an alias.
    */
   List<String> resolveAlias(String alias);
+
+  /**
+   * Returns the full map of standard (non-routed) collection aliases, mapping each alias name to
+   * the list of collections it points to. Routed aliases are not included.
+   *
+   * <p>The default implementation returns an empty map for providers that do not support alias
+   * enumeration; implementations backed by a cluster metadata store (such as ZooKeeper) should
+   * override it.
+   *
+   * @return never {@code null}. The returned map (and the lists it contains) is unmodifiable.
+   */
+  default Map<String, List<String>> getCollectionAliases() {
+    return Collections.emptyMap();
+  }
 
   /** Return alias properties, or an empty map if the alias has no properties. */
   Map<String, String> getAliasProperties(String alias);

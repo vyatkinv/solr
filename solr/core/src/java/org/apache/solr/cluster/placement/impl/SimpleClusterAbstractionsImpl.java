@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -63,6 +64,7 @@ class SimpleClusterAbstractionsImpl {
     private final Set<Node> liveNodes;
     private final Set<Node> liveNodesWithData;
     private final ClusterState clusterState;
+    private final Map<String, List<String>> collectionAliases;
 
     ClusterImpl(SolrCloudManager solrCloudManager) throws IOException {
       Set<String> liveNodes = solrCloudManager.getClusterStateProvider().getLiveNodes();
@@ -74,6 +76,7 @@ class SimpleClusterAbstractionsImpl {
               ? this.liveNodes
               : NodeImpl.getNodes(liveNodesWithData);
       clusterState = solrCloudManager.getClusterState();
+      collectionAliases = solrCloudManager.getClusterStateProvider().getCollectionAliases();
     }
 
     @Override
@@ -102,6 +105,11 @@ class SimpleClusterAbstractionsImpl {
     @Override
     public Iterable<SolrCollection> collections() {
       return ClusterImpl.this::iterator;
+    }
+
+    @Override
+    public Map<String, List<String>> getCollectionAliases() {
+      return collectionAliases;
     }
   }
 
